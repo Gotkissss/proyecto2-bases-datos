@@ -104,6 +104,7 @@ proyecto2/
 ---
 
 ## Diagrama Entidad-Relación
+<img width="1106" height="1280" alt="image" src="https://github.com/user-attachments/assets/aea444bb-2eba-4114-906e-64eeca468f26" />
 
 
 
