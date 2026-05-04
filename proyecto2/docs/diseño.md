@@ -135,4 +135,5 @@ CREATE INDEX idx_producto_proveedor ON Producto(id_proveedor);
 ---
 
 ## Diagrama ER
+<img width="1106" height="1280" alt="image" src="https://github.com/user-attachments/assets/9dc1d78d-6ec8-4be2-99b5-9532f7cbf357" />
 
