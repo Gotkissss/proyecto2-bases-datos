@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: tienda_db
+    environment:
+      POSTGRES_DB: tienda
+      POSTGRES_USER: proy2
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build: ./Backend
+    container_name: tienda_backend
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: tienda
+      DB_USER: proy2
+      DB_PASSWORD: secret
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
+  frontend:
+    build: ./frontend
+    container_name: tienda_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
