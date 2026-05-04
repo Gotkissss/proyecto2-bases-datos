@@ -1,10 +1,29 @@
+import { useState } from 'react'
 import { Routes, Route, NavLink } from 'react-router-dom'
+import { isAuthenticated, getUser, clearSession } from './auth'
+import Login from './pages/Login'
 import Productos from './pages/Productos'
 import Clientes from './pages/Clientes'
 import Ventas from './pages/Ventas'
 import Reportes from './pages/Reportes'
 
 export default function App() {
+  const [autenticado, setAutenticado] = useState(isAuthenticated())
+  const user = getUser()
+
+  function handleLogin() {
+    setAutenticado(true)
+  }
+
+  function handleLogout() {
+    clearSession()
+    setAutenticado(false)
+  }
+
+  if (!autenticado) {
+    return <Login onLogin={handleLogin} />
+  }
+
   return (
     <div style={{ fontFamily: 'sans-serif', minHeight: '100vh', background: '#f5f5f5' }}>
       <nav style={{
@@ -35,6 +54,22 @@ export default function App() {
             {link.label}
           </NavLink>
         ))}
+
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <span style={{ color: '#ccc', fontSize: '0.9rem' }}>
+            👤 {user?.username} ({user?.rol})
+          </span>
+          <button
+            onClick={handleLogout}
+            style={{
+              background: '#e94560', color: 'white', border: 'none',
+              padding: '6px 14px', borderRadius: '6px',
+              cursor: 'pointer', fontWeight: 'bold'
+            }}
+          >
+            Cerrar sesión
+          </button>
+        </div>
       </nav>
 
       <main style={{ padding: '2rem' }}>

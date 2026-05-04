@@ -37,33 +37,51 @@ export default function Reportes() {
   const [ventasPorCliente, setVentasPorCliente] = useState([])
   const [productosMasVendidos, setProductosMasVendidos] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     async function cargar() {
-      const [rv, cv, pb, vpc, pmv] = await Promise.all([
-        fetch(`${API}/reportes/resumen-ventas`).then(r => r.json()),
-        fetch(`${API}/reportes/clientes-con-ventas`).then(r => r.json()),
-        fetch(`${API}/reportes/productos-bajo-stock`).then(r => r.json()),
-        fetch(`${API}/reportes/ventas-por-cliente`).then(r => r.json()),
-        fetch(`${API}/reportes/productos-mas-vendidos`).then(r => r.json()),
-      ])
-      setResumenVentas(rv)
-      setClientesConVentas(cv)
-      setProductosBajoStock(pb)
-      setVentasPorCliente(vpc)
-      setProductosMasVendidos(pmv)
-      setLoading(false)
+      try {
+        const [rv, cv, pb, vpc, pmv] = await Promise.all([
+          fetch(`${API}/reportes/resumen-ventas`).then(r => r.json()),
+          fetch(`${API}/reportes/clientes-con-ventas`).then(r => r.json()),
+          fetch(`${API}/reportes/productos-bajo-stock`).then(r => r.json()),
+          fetch(`${API}/reportes/ventas-por-cliente`).then(r => r.json()),
+          fetch(`${API}/reportes/productos-mas-vendidos`).then(r => r.json()),
+        ])
+        setResumenVentas(rv)
+        setClientesConVentas(cv)
+        setProductosBajoStock(pb)
+        setVentasPorCliente(vpc)
+        setProductosMasVendidos(pmv)
+      } catch (e) {
+        setError('Error al cargar reportes: ' + e.message)
+      } finally {
+        setLoading(false)
+      }
     }
     cargar()
   }, [])
 
   if (loading) return <p>Cargando reportes...</p>
+  if (error) return <p style={{ color: 'red' }}>❌ {error}</p>
 
   return (
     <div>
-      <h2>📊 Reportes</h2>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+        <h2 style={{ margin: 0 }}>📊 Reportes</h2>
+        
+          href={`${API}/reportes/exportar-ventas-csv`}
+          download="ventas.csv"
+          style={{
+            background: '#4caf50', color: 'white', padding: '8px 16px',
+            borderRadius: '6px', textDecoration: 'none', fontWeight: 'bold'
+          }}
+        >
+          ⬇ Exportar Ventas CSV
+        </a>
+      </div>
 
-      {/* VIEW: Resumen de ventas */}
       <div style={estilos.card}>
         <h3 style={{ marginTop: 0 }}>
           Resumen de Ventas
@@ -87,7 +105,6 @@ export default function Reportes() {
         />
       </div>
 
-      {/* GROUP BY + HAVING: Ventas por cliente */}
       <div style={estilos.card}>
         <h3 style={{ marginTop: 0 }}>
           Ventas por Cliente
@@ -96,7 +113,7 @@ export default function Reportes() {
           <span style={{ ...estilos.badge, ...estilos.badgeVerde }}>JOIN</span>
         </h3>
         <p style={{ color: '#666', fontSize: '0.9rem' }}>
-          Clientes con monto total de compras mayor a Q100, agrupados y ordenados por monto
+          Clientes con monto total mayor a Q100, agrupados y ordenados por monto
         </p>
         <TablaGenerica
           columnas={['Cliente', 'Total Ventas', 'Monto Total', 'Promedio por Venta']}
@@ -110,7 +127,6 @@ export default function Reportes() {
         />
       </div>
 
-      {/* CTE: Productos más vendidos */}
       <div style={estilos.card}>
         <h3 style={{ marginTop: 0 }}>
           Productos Más Vendidos
@@ -118,7 +134,7 @@ export default function Reportes() {
           <span style={{ ...estilos.badge, ...estilos.badgeVerde }}>JOIN</span>
         </h3>
         <p style={{ color: '#666', fontSize: '0.9rem' }}>
-          Ranking de productos usando CTE <code>ventas_por_producto</code>
+          Ranking usando CTE <code>ventas_por_producto</code>
         </p>
         <TablaGenerica
           columnas={['Producto', 'Unidades Vendidas', 'Ingresos Generados']}
@@ -131,14 +147,13 @@ export default function Reportes() {
         />
       </div>
 
-      {/* SUBQUERY 1: Clientes con ventas */}
       <div style={estilos.card}>
         <h3 style={{ marginTop: 0 }}>
           Clientes que han Comprado
           <span style={{ ...estilos.badge, ...estilos.badgeAzul }}>SUBQUERY IN</span>
         </h3>
         <p style={{ color: '#666', fontSize: '0.9rem' }}>
-          Clientes cuyo <code>id_cliente</code> aparece en la tabla Venta usando <code>IN (SELECT...)</code>
+          Clientes cuyo <code>id_cliente</code> aparece en Venta usando <code>IN (SELECT...)</code>
         </p>
         <TablaGenerica
           columnas={['ID', 'Nombre', 'Apellido', 'Email']}
@@ -152,14 +167,13 @@ export default function Reportes() {
         />
       </div>
 
-      {/* SUBQUERY 2: Productos bajo stock promedio */}
       <div style={estilos.card}>
         <h3 style={{ marginTop: 0 }}>
           Productos con Stock Bajo el Promedio
           <span style={{ ...estilos.badge, ...estilos.badgeAzul }}>SUBQUERY</span>
         </h3>
         <p style={{ color: '#666', fontSize: '0.9rem' }}>
-          Productos con stock menor al promedio usando <code>WHERE stock &lt; (SELECT AVG(stock)...)</code>
+          Productos con <code>stock &lt; (SELECT AVG(stock)...)</code>
         </p>
         <TablaGenerica
           columnas={['ID', 'Producto', 'Stock Actual', 'Precio']}
