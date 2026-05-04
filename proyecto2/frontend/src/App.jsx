@@ -1,63 +1,50 @@
-import { useEffect, useState } from "react";
-
-const API = "http://localhost:8000";
+import { Routes, Route, NavLink } from 'react-router-dom'
+import Productos from './pages/Productos'
+import Clientes from './pages/Clientes'
+import Ventas from './pages/Ventas'
+import Reportes from './pages/Reportes'
 
 export default function App() {
-  const [productos, setProductos] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    fetch(`${API}/productos`)
-      .then(res => {
-        if (!res.ok) throw new Error("Error al cargar productos");
-        return res.json();
-      })
-      .then(data => {
-        setProductos(data);
-        setLoading(false);
-      })
-      .catch(err => {
-        setError(err.message);
-        setLoading(false);
-      });
-  }, []);
-
   return (
-    <div style={{ fontFamily: "sans-serif", padding: "2rem" }}>
-      <h1>Tienda — Inventario</h1>
+    <div style={{ fontFamily: 'sans-serif', minHeight: '100vh', background: '#f5f5f5' }}>
+      <nav style={{
+        background: '#1a1a2e', padding: '1rem 2rem',
+        display: 'flex', gap: '2rem', alignItems: 'center'
+      }}>
+        <span style={{ color: 'white', fontWeight: 'bold', fontSize: '1.2rem', marginRight: '2rem' }}>
+          🛒 Tienda
+        </span>
+        {[
+          { to: '/', label: 'Productos' },
+          { to: '/clientes', label: 'Clientes' },
+          { to: '/ventas', label: 'Ventas' },
+          { to: '/reportes', label: 'Reportes' },
+        ].map(link => (
+          <NavLink
+            key={link.to}
+            to={link.to}
+            end={link.to === '/'}
+            style={({ isActive }) => ({
+              color: isActive ? '#e94560' : '#ccc',
+              textDecoration: 'none',
+              fontWeight: isActive ? 'bold' : 'normal',
+              borderBottom: isActive ? '2px solid #e94560' : '2px solid transparent',
+              paddingBottom: '4px'
+            })}
+          >
+            {link.label}
+          </NavLink>
+        ))}
+      </nav>
 
-      {loading && <p>Cargando productos...</p>}
-      {error && <p style={{ color: "red" }}>Error: {error}</p>}
-
-      {!loading && !error && (
-        <table border="1" cellPadding="8" style={{ borderCollapse: "collapse", width: "100%" }}>
-          <thead style={{ background: "#f0f0f0" }}>
-            <tr>
-              <th>ID</th>
-              <th>Nombre</th>
-              <th>Descripción</th>
-              <th>Precio</th>
-              <th>Stock</th>
-              <th>Categoría</th>
-              <th>Proveedor</th>
-            </tr>
-          </thead>
-          <tbody>
-            {productos.map(p => (
-              <tr key={p.id_producto}>
-                <td>{p.id_producto}</td>
-                <td>{p.nombre}</td>
-                <td>{p.descripcion}</td>
-                <td>Q{p.precio.toFixed(2)}</td>
-                <td>{p.stock}</td>
-                <td>{p.categoria}</td>
-                <td>{p.proveedor}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <main style={{ padding: '2rem' }}>
+        <Routes>
+          <Route path="/" element={<Productos />} />
+          <Route path="/clientes" element={<Clientes />} />
+          <Route path="/ventas" element={<Ventas />} />
+          <Route path="/reportes" element={<Reportes />} />
+        </Routes>
+      </main>
     </div>
-  );
+  )
 }
