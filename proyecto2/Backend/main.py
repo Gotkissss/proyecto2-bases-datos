@@ -1,8 +1,15 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
+from passlib.context import CryptContext
+from jose import jwt
+from datetime import datetime, timedelta
 from db import get_connection
+import csv
+import io
 
 app = FastAPI(title="Tienda API")
 
@@ -13,31 +20,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ========================
+# AUTH CONFIG
+# ========================
 
-@app.on_event("startup")
-def crear_view():
+SECRET_KEY = "tienda_secret_2026"
+ALGORITHM = "HS256"
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+def verify_password(plain, hashed):
+    return pwd_context.verify(plain, hashed)
+
+def hash_password(password):
+    return pwd_context.hash(password)
+
+def create_token(data: dict):
+    to_encode = data.copy()
+    to_encode["exp"] = datetime.utcnow() + timedelta(hours=8)
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE OR REPLACE VIEW resumen_ventas AS
-            SELECT
-                v.id_venta, v.fecha, v.total,
-                c.nombre || ' ' || c.apellido AS cliente,
-                e.nombre || ' ' || e.apellido AS empleado,
-                COUNT(dv.id_detalle) AS cantidad_productos
-            FROM Venta v
-            JOIN Cliente c ON v.id_cliente = c.id_cliente
-            JOIN Empleado e ON v.id_empleado = e.id_empleado
-            JOIN DetalleVenta dv ON v.id_venta = dv.id_venta
-            GROUP BY v.id_venta, v.fecha, v.total,
-                     c.nombre, c.apellido, e.nombre, e.apellido
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Error creando view: {e}")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
 
 # ========================
 # MODELOS
@@ -74,7 +82,49 @@ class ClienteUpdate(BaseModel):
 class VentaCreate(BaseModel):
     id_cliente: int
     id_empleado: int
-    productos: list[dict]  # [{id_producto, cantidad}]
+    productos: list[dict]
+
+class UsuarioCreate(BaseModel):
+    username: str
+    password: str
+    rol: str = "empleado"
+
+# ========================
+# STARTUP
+# ========================
+
+@app.on_event("startup")
+def inicializar():
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS Usuario (
+                id_usuario SERIAL PRIMARY KEY,
+                username VARCHAR(50) NOT NULL UNIQUE,
+                password_hash VARCHAR(255) NOT NULL,
+                rol VARCHAR(20) NOT NULL DEFAULT 'empleado'
+            )
+        """)
+        cur.execute("""
+            CREATE OR REPLACE VIEW resumen_ventas AS
+            SELECT
+                v.id_venta, v.fecha, v.total,
+                c.nombre || ' ' || c.apellido AS cliente,
+                e.nombre || ' ' || e.apellido AS empleado,
+                COUNT(dv.id_detalle) AS cantidad_productos
+            FROM Venta v
+            JOIN Cliente c ON v.id_cliente = c.id_cliente
+            JOIN Empleado e ON v.id_empleado = e.id_empleado
+            JOIN DetalleVenta dv ON v.id_venta = dv.id_venta
+            GROUP BY v.id_venta, v.fecha, v.total,
+                     c.nombre, c.apellido, e.nombre, e.apellido
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error en startup: {e}")
 
 # ========================
 # HEALTH CHECK
@@ -85,7 +135,60 @@ def health_check():
     return {"status": "ok", "message": "Tienda API funcionando"}
 
 # ========================
-# CATEGORIAS Y PROVEEDORES (para formularios)
+# AUTH ENDPOINTS
+# ========================
+
+@app.post("/auth/register", status_code=201)
+def register(u: UsuarioCreate):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        hashed = hash_password(u.password)
+        cur.execute("""
+            INSERT INTO Usuario (username, password_hash, rol)
+            VALUES (%s, %s, %s) RETURNING id_usuario
+        """, (u.username, hashed, u.rol))
+        new_id = cur.fetchone()[0]
+        conn.commit()
+        return {"id_usuario": new_id, "mensaje": "Usuario creado"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+@app.post("/auth/login")
+def login(form: OAuth2PasswordRequestForm = Depends()):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id_usuario, username, password_hash, rol FROM Usuario WHERE username = %s",
+        (form.username,)
+    )
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not user or not verify_password(form.password, user[2]):
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    token = create_token({"sub": user[1], "rol": user[3], "id": user[0]})
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "username": user[1],
+        "rol": user[3]
+    }
+
+@app.get("/auth/me")
+def me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+@app.post("/auth/logout")
+def logout():
+    return {"mensaje": "Sesión cerrada"}
+
+# ========================
+# CATEGORIAS, PROVEEDORES, EMPLEADOS
 # ========================
 
 @app.get("/categorias")
@@ -177,8 +280,7 @@ def create_producto(p: ProductoCreate):
     try:
         cur.execute("""
             INSERT INTO Producto (nombre, descripcion, precio, stock, id_categoria, id_proveedor)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING id_producto
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id_producto
         """, (p.nombre, p.descripcion, p.precio, p.stock, p.id_categoria, p.id_proveedor))
         new_id = cur.fetchone()[0]
         conn.commit()
@@ -278,8 +380,7 @@ def create_cliente(c: ClienteCreate):
     try:
         cur.execute("""
             INSERT INTO Cliente (nombre, apellido, telefono, email)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id_cliente
+            VALUES (%s, %s, %s, %s) RETURNING id_cliente
         """, (c.nombre, c.apellido, c.telefono, c.email))
         new_id = cur.fetchone()[0]
         conn.commit()
@@ -340,7 +441,7 @@ def delete_cliente(id_cliente: int):
         conn.close()
 
 # ========================
-# VENTAS CON TRANSACCIÓN EXPLÍCITA
+# VENTAS
 # ========================
 
 @app.get("/ventas")
@@ -366,71 +467,6 @@ def get_ventas():
         } for r in rows
     ]
 
-@app.post("/ventas", status_code=201)
-def create_venta(v: VentaCreate):
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        # TRANSACCIÓN EXPLÍCITA
-        cur.execute("BEGIN")
-
-        total = 0.0
-        detalles = []
-
-        for item in v.productos:
-            id_producto = item["id_producto"]
-            cantidad = item["cantidad"]
-
-            # Verificar stock
-            cur.execute("SELECT precio, stock FROM Producto WHERE id_producto = %s FOR UPDATE",
-                        (id_producto,))
-            producto = cur.fetchone()
-            if not producto:
-                raise Exception(f"Producto {id_producto} no encontrado")
-            if producto[1] < cantidad:
-                raise Exception(f"Stock insuficiente para producto {id_producto}")
-
-            precio_unitario = float(producto[0])
-            total += precio_unitario * cantidad
-            detalles.append((id_producto, cantidad, precio_unitario))
-
-        # Insertar venta
-        cur.execute("""
-            INSERT INTO Venta (fecha, total, id_cliente, id_empleado)
-            VALUES (NOW(), %s, %s, %s)
-            RETURNING id_venta
-        """, (total, v.id_cliente, v.id_empleado))
-        id_venta = cur.fetchone()[0]
-
-        # Insertar detalles y descontar stock
-        for id_producto, cantidad, precio_unitario in detalles:
-            cur.execute("""
-                INSERT INTO DetalleVenta (cantidad, precio_unitario, id_venta, id_producto)
-                VALUES (%s, %s, %s, %s)
-            """, (cantidad, precio_unitario, id_venta, id_producto))
-            cur.execute("""
-                UPDATE Producto SET stock = stock - %s WHERE id_producto = %s
-            """, (cantidad, id_producto))
-
-        cur.execute("COMMIT")
-        return {"id_venta": id_venta, "total": total, "mensaje": "Venta registrada exitosamente"}
-
-    except Exception as e:
-        cur.execute("ROLLBACK")
-        raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
-
-# ========================
-# CONSULTAS SQL AVANZADAS
-# ========================
-
-# JOIN 1: ya está en /productos (Producto + Categoria + Proveedor)
-
-# JOIN 2: Ventas con cliente y empleado (ya está en /ventas)
-
-# JOIN 3: Detalle de una venta específica
 @app.get("/ventas/{id_venta}/detalle")
 def get_detalle_venta(id_venta: int):
     conn = get_connection()
@@ -454,7 +490,59 @@ def get_detalle_venta(id_venta: int):
         } for r in rows
     ]
 
-# SUBQUERY 1: Clientes que han realizado al menos una venta
+@app.post("/ventas", status_code=201)
+def create_venta(v: VentaCreate):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN")
+        total = 0.0
+        detalles = []
+        for item in v.productos:
+            id_producto = item["id_producto"]
+            cantidad = item["cantidad"]
+            cur.execute(
+                "SELECT precio, stock FROM Producto WHERE id_producto = %s FOR UPDATE",
+                (id_producto,)
+            )
+            producto = cur.fetchone()
+            if not producto:
+                raise Exception(f"Producto {id_producto} no encontrado")
+            if producto[1] < cantidad:
+                raise Exception(f"Stock insuficiente para producto {id_producto}")
+            precio_unitario = float(producto[0])
+            total += precio_unitario * cantidad
+            detalles.append((id_producto, cantidad, precio_unitario))
+
+        cur.execute("""
+            INSERT INTO Venta (fecha, total, id_cliente, id_empleado)
+            VALUES (NOW(), %s, %s, %s) RETURNING id_venta
+        """, (total, v.id_cliente, v.id_empleado))
+        id_venta = cur.fetchone()[0]
+
+        for id_producto, cantidad, precio_unitario in detalles:
+            cur.execute("""
+                INSERT INTO DetalleVenta (cantidad, precio_unitario, id_venta, id_producto)
+                VALUES (%s, %s, %s, %s)
+            """, (cantidad, precio_unitario, id_venta, id_producto))
+            cur.execute(
+                "UPDATE Producto SET stock = stock - %s WHERE id_producto = %s",
+                (cantidad, id_producto)
+            )
+
+        cur.execute("COMMIT")
+        return {"id_venta": id_venta, "total": total, "mensaje": "Venta registrada exitosamente"}
+    except Exception as e:
+        cur.execute("ROLLBACK")
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+# ========================
+# REPORTES
+# ========================
+
 @app.get("/reportes/clientes-con-ventas")
 def clientes_con_ventas():
     conn = get_connection()
@@ -462,9 +550,7 @@ def clientes_con_ventas():
     cur.execute("""
         SELECT id_cliente, nombre, apellido, email
         FROM Cliente
-        WHERE id_cliente IN (
-            SELECT DISTINCT id_cliente FROM Venta
-        )
+        WHERE id_cliente IN (SELECT DISTINCT id_cliente FROM Venta)
         ORDER BY apellido
     """)
     rows = cur.fetchall()
@@ -475,7 +561,6 @@ def clientes_con_ventas():
         for r in rows
     ]
 
-# SUBQUERY 2: Productos con stock por debajo del promedio
 @app.get("/reportes/productos-bajo-stock")
 def productos_bajo_stock():
     conn = get_connection()
@@ -494,7 +579,6 @@ def productos_bajo_stock():
         for r in rows
     ]
 
-# GROUP BY + HAVING + agregación: ventas por cliente con total > 100
 @app.get("/reportes/ventas-por-cliente")
 def ventas_por_cliente():
     conn = get_connection()
@@ -520,7 +604,6 @@ def ventas_por_cliente():
         } for r in rows
     ]
 
-# CTE: ranking de productos más vendidos
 @app.get("/reportes/productos-mas-vendidos")
 def productos_mas_vendidos():
     conn = get_connection()
@@ -546,7 +629,6 @@ def productos_mas_vendidos():
         for r in rows
     ]
 
-# VIEW: resumen de ventas
 @app.get("/reportes/resumen-ventas")
 def resumen_ventas():
     conn = get_connection()
@@ -561,3 +643,23 @@ def resumen_ventas():
             "cliente": r[3], "empleado": r[4], "cantidad_productos": r[5]
         } for r in rows
     ]
+
+@app.get("/reportes/exportar-ventas-csv")
+def exportar_ventas_csv():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM resumen_ventas ORDER BY fecha DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['ID Venta', 'Fecha', 'Total', 'Cliente', 'Empleado', 'Cantidad Productos'])
+    for r in rows:
+        writer.writerow([r[0], r[1], r[2], r[3], r[4], r[5]])
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=ventas.csv"}
+    )
