@@ -13,6 +13,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+def crear_view():
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE OR REPLACE VIEW resumen_ventas AS
+            SELECT
+                v.id_venta, v.fecha, v.total,
+                c.nombre || ' ' || c.apellido AS cliente,
+                e.nombre || ' ' || e.apellido AS empleado,
+                COUNT(dv.id_detalle) AS cantidad_productos
+            FROM Venta v
+            JOIN Cliente c ON v.id_cliente = c.id_cliente
+            JOIN Empleado e ON v.id_empleado = e.id_empleado
+            JOIN DetalleVenta dv ON v.id_venta = dv.id_venta
+            GROUP BY v.id_venta, v.fecha, v.total,
+                     c.nombre, c.apellido, e.nombre, e.apellido
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error creando view: {e}")
+
 # ========================
 # MODELOS
 # ========================
@@ -198,6 +224,9 @@ def delete_producto(id_producto: int):
     conn = get_connection()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT COUNT(*) FROM DetalleVenta WHERE id_producto = %s", (id_producto,))
+        if cur.fetchone()[0] > 0:
+            raise HTTPException(status_code=400, detail="No se puede eliminar: el producto tiene ventas registradas")
         cur.execute("DELETE FROM Producto WHERE id_producto = %s", (id_producto,))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
@@ -293,6 +322,9 @@ def delete_cliente(id_cliente: int):
     conn = get_connection()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT COUNT(*) FROM Venta WHERE id_cliente = %s", (id_cliente,))
+        if cur.fetchone()[0] > 0:
+            raise HTTPException(status_code=400, detail="No se puede eliminar: el cliente tiene ventas registradas")
         cur.execute("DELETE FROM Cliente WHERE id_cliente = %s", (id_cliente,))
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Cliente no encontrado")
