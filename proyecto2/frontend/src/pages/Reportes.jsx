@@ -69,18 +69,23 @@ export default function Reportes() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-        <h2 style={{ margin: 0 }}>📊 Reportes</h2>
-        
-          href={`${API}/reportes/exportar-ventas-csv`}
-          download="ventas.csv"
-          style={{
-            background: '#4caf50', color: 'white', padding: '8px 16px',
-            borderRadius: '6px', textDecoration: 'none', fontWeight: 'bold'
-          }}
-        >
-          ⬇ Exportar Ventas CSV
-        </a>
-      </div>
+  <h2 style={{ margin: 0 }}>📊 Reportes</h2>
+
+  <a
+    href={`${API}/reportes/exportar-ventas-csv`}
+    download="ventas.csv"
+    style={{
+      background: '#4caf50',
+      color: 'white',
+      padding: '8px 16px',
+      borderRadius: '6px',
+      textDecoration: 'none',
+      fontWeight: 'bold'
+    }}
+  >
+    ⬇ Exportar Ventas CSV
+  </a>
+</div>
 
       <div style={estilos.card}>
         <h3 style={{ marginTop: 0 }}>
