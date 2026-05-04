@@ -513,3 +513,19 @@ def productos_mas_vendidos():
         {"nombre": r[0], "unidades_vendidas": r[1], "ingresos": float(r[2])}
         for r in rows
     ]
+
+# VIEW: resumen de ventas
+@app.get("/reportes/resumen-ventas")
+def resumen_ventas():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM resumen_ventas ORDER BY fecha DESC")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [
+        {
+            "id_venta": r[0], "fecha": str(r[1]), "total": float(r[2]),
+            "cliente": r[3], "empleado": r[4], "cantidad_productos": r[5]
+        } for r in rows
+    ]

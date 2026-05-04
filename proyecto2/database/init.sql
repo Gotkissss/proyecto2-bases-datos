@@ -266,3 +266,20 @@ INSERT INTO DetalleVenta (cantidad, precio_unitario, id_venta, id_producto) VALU
 (1,   85.00, 23,  2),
 (2,   32.00, 24, 23),
 (2,   48.00, 25, 24);
+
+-- ========================
+-- VIEW
+-- ========================
+CREATE OR REPLACE VIEW resumen_ventas AS
+SELECT
+    v.id_venta,
+    v.fecha,
+    v.total,
+    c.nombre || ' ' || c.apellido AS cliente,
+    e.nombre || ' ' || e.apellido AS empleado,
+    COUNT(dv.id_detalle) AS cantidad_productos
+FROM Venta v
+JOIN Cliente c ON v.id_cliente = c.id_cliente
+JOIN Empleado e ON v.id_empleado = e.id_empleado
+JOIN DetalleVenta dv ON v.id_venta = dv.id_venta
+GROUP BY v.id_venta, v.fecha, v.total, c.nombre, c.apellido, e.nombre, e.apellido;
