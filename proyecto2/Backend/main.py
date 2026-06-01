@@ -1,3 +1,8 @@
+import json
+import csv
+import io
+import os
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -7,9 +12,16 @@ from typing import Optional
 from passlib.context import CryptContext
 from jose import jwt
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+
+from database import get_db
+from models import Base, Categoria, Proveedor, Producto, Empleado, Cliente, Venta, DetalleVenta, Usuario
 from db import get_connection
-import csv
-import io
+
+load_dotenv()
 
 app = FastAPI(title="Tienda API")
 
@@ -24,31 +36,44 @@ app.add_middleware(
 # AUTH CONFIG
 # ========================
 
-SECRET_KEY = "tienda_secret_2026"
+SECRET_KEY = os.getenv("SECRET_KEY", "tienda_secret_2026")
 ALGORITHM = "HS256"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
+
 def verify_password(plain, hashed):
     return pwd_context.verify(plain, hashed)
 
+
 def hash_password(password):
     return pwd_context.hash(password)
+
 
 def create_token(data: dict):
     to_encode = data.copy()
     to_encode["exp"] = datetime.utcnow() + timedelta(hours=8)
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
 def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
-    except:
+    except Exception:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
 
+
+def require_roles(*roles):
+    def checker(current_user: dict = Depends(get_current_user)):
+        if current_user.get("rol") not in roles:
+            raise HTTPException(status_code=403, detail="No tienes permiso para esta acción")
+        return current_user
+    return checker
+
+
 # ========================
-# MODELOS
+# MODELOS PYDANTIC
 # ========================
 
 class ProductoCreate(BaseModel):
@@ -59,6 +84,7 @@ class ProductoCreate(BaseModel):
     id_categoria: int
     id_proveedor: int
 
+
 class ProductoUpdate(BaseModel):
     nombre: Optional[str] = None
     descripcion: Optional[str] = None
@@ -67,11 +93,13 @@ class ProductoUpdate(BaseModel):
     id_categoria: Optional[int] = None
     id_proveedor: Optional[int] = None
 
+
 class ClienteCreate(BaseModel):
     nombre: str
     apellido: str
     telefono: Optional[str] = None
     email: Optional[str] = None
+
 
 class ClienteUpdate(BaseModel):
     nombre: Optional[str] = None
@@ -79,52 +107,24 @@ class ClienteUpdate(BaseModel):
     telefono: Optional[str] = None
     email: Optional[str] = None
 
+
 class VentaCreate(BaseModel):
     id_cliente: int
     id_empleado: int
     productos: list[dict]
 
+
 class UsuarioCreate(BaseModel):
     username: str
     password: str
-    rol: str = "empleado"
+    rol: str = "vendedor"
 
-# ========================
-# STARTUP
-# ========================
 
-@app.on_event("startup")
-def inicializar():
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS Usuario (
-                id_usuario SERIAL PRIMARY KEY,
-                username VARCHAR(50) NOT NULL UNIQUE,
-                password_hash VARCHAR(255) NOT NULL,
-                rol VARCHAR(20) NOT NULL DEFAULT 'empleado'
-            )
-        """)
-        cur.execute("""
-            CREATE OR REPLACE VIEW resumen_ventas AS
-            SELECT
-                v.id_venta, v.fecha, v.total,
-                c.nombre || ' ' || c.apellido AS cliente,
-                e.nombre || ' ' || e.apellido AS empleado,
-                COUNT(dv.id_detalle) AS cantidad_productos
-            FROM Venta v
-            JOIN Cliente c ON v.id_cliente = c.id_cliente
-            JOIN Empleado e ON v.id_empleado = e.id_empleado
-            JOIN DetalleVenta dv ON v.id_venta = dv.id_venta
-            GROUP BY v.id_venta, v.fecha, v.total,
-                     c.nombre, c.apellido, e.nombre, e.apellido
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Error en startup: {e}")
+class AjusteStockRequest(BaseModel):
+    id_producto: int
+    cantidad: int
+    operacion: str
+
 
 # ========================
 # HEALTH CHECK
@@ -134,417 +134,377 @@ def inicializar():
 def health_check():
     return {"status": "ok", "message": "Tienda API funcionando"}
 
+
 # ========================
 # AUTH ENDPOINTS
 # ========================
 
 @app.post("/auth/register", status_code=201)
-def register(u: UsuarioCreate):
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        hashed = hash_password(u.password)
-        cur.execute("""
-            INSERT INTO Usuario (username, password_hash, rol)
-            VALUES (%s, %s, %s) RETURNING id_usuario
-        """, (u.username, hashed, u.rol))
-        new_id = cur.fetchone()[0]
-        conn.commit()
-        return {"id_usuario": new_id, "mensaje": "Usuario creado"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
+def register(u: UsuarioCreate, db: Session = Depends(get_db)):
+    existing = db.query(Usuario).filter(Usuario.username == u.username).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="El usuario ya existe")
+    nuevo = Usuario(
+        username=u.username,
+        password_hash=hash_password(u.password),
+        rol=u.rol
+    )
+    db.add(nuevo)
+    db.commit()
+    db.refresh(nuevo)
+    return {"id_usuario": nuevo.id_usuario, "mensaje": "Usuario creado"}
+
 
 @app.post("/auth/login")
-def login(form: OAuth2PasswordRequestForm = Depends()):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id_usuario, username, password_hash, rol FROM Usuario WHERE username = %s",
-        (form.username,)
-    )
-    user = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not user or not verify_password(form.password, user[2]):
+def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(Usuario).filter(Usuario.username == form.username).first()
+    if not user or not verify_password(form.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
-    token = create_token({"sub": user[1], "rol": user[3], "id": user[0]})
+    token = create_token({"sub": user.username, "rol": user.rol, "id": user.id_usuario})
     return {
         "access_token": token,
         "token_type": "bearer",
-        "username": user[1],
-        "rol": user[3]
+        "username": user.username,
+        "rol": user.rol
     }
+
 
 @app.get("/auth/me")
 def me(current_user: dict = Depends(get_current_user)):
     return current_user
 
+
 @app.post("/auth/logout")
 def logout():
     return {"mensaje": "Sesión cerrada"}
 
+
 # ========================
-# CATEGORIAS, PROVEEDORES, EMPLEADOS
+# CATEGORIAS, PROVEEDORES, EMPLEADOS — ORM
 # ========================
 
 @app.get("/categorias")
-def get_categorias():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id_categoria, nombre FROM Categoria ORDER BY nombre")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return [{"id_categoria": r[0], "nombre": r[1]} for r in rows]
+def get_categorias(db: Session = Depends(get_db)):
+    rows = db.query(Categoria).order_by(Categoria.nombre).all()
+    return [{"id_categoria": r.id_categoria, "nombre": r.nombre} for r in rows]
+
 
 @app.get("/proveedores")
-def get_proveedores():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id_proveedor, nombre FROM Proveedor ORDER BY nombre")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return [{"id_proveedor": r[0], "nombre": r[1]} for r in rows]
+def get_proveedores(db: Session = Depends(get_db)):
+    rows = db.query(Proveedor).order_by(Proveedor.nombre).all()
+    return [{"id_proveedor": r.id_proveedor, "nombre": r.nombre} for r in rows]
+
 
 @app.get("/empleados")
-def get_empleados():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT id_empleado, nombre, apellido FROM Empleado ORDER BY nombre")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return [{"id_empleado": r[0], "nombre": r[1], "apellido": r[2]} for r in rows]
+def get_empleados(db: Session = Depends(get_db)):
+    rows = db.query(Empleado).order_by(Empleado.nombre).all()
+    return [{"id_empleado": r.id_empleado, "nombre": r.nombre, "apellido": r.apellido} for r in rows]
+
 
 # ========================
-# CRUD PRODUCTOS
+# CRUD PRODUCTOS — ORM + Stored Procedures
 # ========================
 
 @app.get("/productos")
-def get_productos():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT p.id_producto, p.nombre, p.descripcion, p.precio, p.stock,
-               c.nombre AS categoria, pr.nombre AS proveedor,
-               p.id_categoria, p.id_proveedor
-        FROM Producto p
-        JOIN Categoria c ON p.id_categoria = c.id_categoria
-        JOIN Proveedor pr ON p.id_proveedor = pr.id_proveedor
-        ORDER BY p.id_producto
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+def get_productos(db: Session = Depends(get_db)):
+    rows = (
+        db.query(Producto)
+        .join(Categoria, Producto.id_categoria == Categoria.id_categoria)
+        .join(Proveedor, Producto.id_proveedor == Proveedor.id_proveedor)
+        .order_by(Producto.id_producto)
+        .all()
+    )
     return [
         {
-            "id_producto": r[0], "nombre": r[1], "descripcion": r[2],
-            "precio": float(r[3]), "stock": r[4], "categoria": r[5],
-            "proveedor": r[6], "id_categoria": r[7], "id_proveedor": r[8]
-        } for r in rows
+            "id_producto": r.id_producto,
+            "nombre": r.nombre,
+            "descripcion": r.descripcion,
+            "precio": float(r.precio),
+            "stock": r.stock,
+            "categoria": r.categoria.nombre,
+            "proveedor": r.proveedor.nombre,
+            "id_categoria": r.id_categoria,
+            "id_proveedor": r.id_proveedor,
+        }
+        for r in rows
     ]
 
+
 @app.get("/productos/{id_producto}")
-def get_producto(id_producto: int):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT p.id_producto, p.nombre, p.descripcion, p.precio, p.stock,
-               c.nombre AS categoria, pr.nombre AS proveedor,
-               p.id_categoria, p.id_proveedor
-        FROM Producto p
-        JOIN Categoria c ON p.id_categoria = c.id_categoria
-        JOIN Proveedor pr ON p.id_proveedor = pr.id_proveedor
-        WHERE p.id_producto = %s
-    """, (id_producto,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not row:
+def get_producto(id_producto: int, db: Session = Depends(get_db)):
+    r = db.query(Producto).filter(Producto.id_producto == id_producto).first()
+    if not r:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
     return {
-        "id_producto": row[0], "nombre": row[1], "descripcion": row[2],
-        "precio": float(row[3]), "stock": row[4], "categoria": row[5],
-        "proveedor": row[6], "id_categoria": row[7], "id_proveedor": row[8]
+        "id_producto": r.id_producto,
+        "nombre": r.nombre,
+        "descripcion": r.descripcion,
+        "precio": float(r.precio),
+        "stock": r.stock,
+        "categoria": r.categoria.nombre,
+        "proveedor": r.proveedor.nombre,
+        "id_categoria": r.id_categoria,
+        "id_proveedor": r.id_proveedor,
     }
 
+
 @app.post("/productos", status_code=201)
-def create_producto(p: ProductoCreate):
-    conn = get_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO Producto (nombre, descripcion, precio, stock, id_categoria, id_proveedor)
-            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id_producto
-        """, (p.nombre, p.descripcion, p.precio, p.stock, p.id_categoria, p.id_proveedor))
-        new_id = cur.fetchone()[0]
-        conn.commit()
-        return {"id_producto": new_id, "mensaje": "Producto creado exitosamente"}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
+def create_producto(
+    p: ProductoCreate,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente", "supervisor"))
+):
+    result = db.execute(
+        text("CALL sp_upsert_producto(:id, :nombre, :desc, :precio, :stock, :cat, :prov, null)"),
+        {
+            "id": 0,
+            "nombre": p.nombre,
+            "desc": p.descripcion,
+            "precio": p.precio,
+            "stock": p.stock,
+            "cat": p.id_categoria,
+            "prov": p.id_proveedor,
+        }
+    )
+    db.commit()
+    row = result.fetchone()
+    new_id = row[0] if row else None
+    return {"id_producto": new_id, "mensaje": "Producto creado exitosamente"}
+
 
 @app.put("/productos/{id_producto}")
-def update_producto(id_producto: int, p: ProductoUpdate):
-    conn = get_connection()
-    cur = conn.cursor()
+def update_producto(
+    id_producto: int,
+    p: ProductoUpdate,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente", "supervisor"))
+):
     try:
-        cur.execute("""
-            UPDATE Producto
-            SET nombre = COALESCE(%s, nombre),
-                descripcion = COALESCE(%s, descripcion),
-                precio = COALESCE(%s, precio),
-                stock = COALESCE(%s, stock),
-                id_categoria = COALESCE(%s, id_categoria),
-                id_proveedor = COALESCE(%s, id_proveedor)
-            WHERE id_producto = %s
-        """, (p.nombre, p.descripcion, p.precio, p.stock,
-              p.id_categoria, p.id_proveedor, id_producto))
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Producto no encontrado")
-        conn.commit()
+        db.execute(
+            text("CALL sp_upsert_producto(:id, :nombre, :desc, :precio, :stock, :cat, :prov, null)"),
+            {
+                "id": id_producto,
+                "nombre": p.nombre,
+                "desc": p.descripcion,
+                "precio": p.precio,
+                "stock": p.stock,
+                "cat": p.id_categoria,
+                "prov": p.id_proveedor,
+            }
+        )
+        db.commit()
         return {"mensaje": "Producto actualizado exitosamente"}
-    except HTTPException:
-        raise
     except Exception as e:
-        conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
+
 
 @app.delete("/productos/{id_producto}")
-def delete_producto(id_producto: int):
-    conn = get_connection()
-    cur = conn.cursor()
+def delete_producto(
+    id_producto: int,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente"))
+):
     try:
-        cur.execute("SELECT COUNT(*) FROM DetalleVenta WHERE id_producto = %s", (id_producto,))
-        if cur.fetchone()[0] > 0:
-            raise HTTPException(status_code=400, detail="No se puede eliminar: el producto tiene ventas registradas")
-        cur.execute("DELETE FROM Producto WHERE id_producto = %s", (id_producto,))
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Producto no encontrado")
-        conn.commit()
+        db.execute(
+            text("CALL sp_eliminar_producto(:id, null)"),
+            {"id": id_producto}
+        )
+        db.commit()
         return {"mensaje": "Producto eliminado exitosamente"}
-    except HTTPException:
-        raise
     except Exception as e:
-        conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
+
 
 # ========================
-# CRUD CLIENTES
+# CRUD CLIENTES — ORM + Stored Procedures
 # ========================
 
 @app.get("/clientes")
-def get_clientes():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM Cliente ORDER BY id_cliente")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+def get_clientes(db: Session = Depends(get_db)):
+    rows = db.query(Cliente).order_by(Cliente.id_cliente).all()
     return [
-        {"id_cliente": r[0], "nombre": r[1], "apellido": r[2],
-         "telefono": r[3], "email": r[4]} for r in rows
+        {"id_cliente": r.id_cliente, "nombre": r.nombre, "apellido": r.apellido,
+         "telefono": r.telefono, "email": r.email}
+        for r in rows
     ]
 
+
 @app.get("/clientes/{id_cliente}")
-def get_cliente(id_cliente: int):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM Cliente WHERE id_cliente = %s", (id_cliente,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not row:
+def get_cliente(id_cliente: int, db: Session = Depends(get_db)):
+    r = db.query(Cliente).filter(Cliente.id_cliente == id_cliente).first()
+    if not r:
         raise HTTPException(status_code=404, detail="Cliente no encontrado")
-    return {"id_cliente": row[0], "nombre": row[1], "apellido": row[2],
-            "telefono": row[3], "email": row[4]}
+    return {"id_cliente": r.id_cliente, "nombre": r.nombre, "apellido": r.apellido,
+            "telefono": r.telefono, "email": r.email}
+
 
 @app.post("/clientes", status_code=201)
-def create_cliente(c: ClienteCreate):
-    conn = get_connection()
-    cur = conn.cursor()
+def create_cliente(
+    c: ClienteCreate,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente", "supervisor", "vendedor"))
+):
     try:
-        cur.execute("""
-            INSERT INTO Cliente (nombre, apellido, telefono, email)
-            VALUES (%s, %s, %s, %s) RETURNING id_cliente
-        """, (c.nombre, c.apellido, c.telefono, c.email))
-        new_id = cur.fetchone()[0]
-        conn.commit()
+        result = db.execute(
+            text("CALL sp_upsert_cliente(:id, :nombre, :apellido, :tel, :email, null)"),
+            {"id": 0, "nombre": c.nombre, "apellido": c.apellido,
+             "tel": c.telefono, "email": c.email}
+        )
+        db.commit()
+        row = result.fetchone()
+        new_id = row[0] if row else None
         return {"id_cliente": new_id, "mensaje": "Cliente creado exitosamente"}
     except Exception as e:
-        conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
+
 
 @app.put("/clientes/{id_cliente}")
-def update_cliente(id_cliente: int, c: ClienteUpdate):
-    conn = get_connection()
-    cur = conn.cursor()
+def update_cliente(
+    id_cliente: int,
+    c: ClienteUpdate,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente", "supervisor", "vendedor"))
+):
     try:
-        cur.execute("""
-            UPDATE Cliente
-            SET nombre = COALESCE(%s, nombre),
-                apellido = COALESCE(%s, apellido),
-                telefono = COALESCE(%s, telefono),
-                email = COALESCE(%s, email)
-            WHERE id_cliente = %s
-        """, (c.nombre, c.apellido, c.telefono, c.email, id_cliente))
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Cliente no encontrado")
-        conn.commit()
+        db.execute(
+            text("CALL sp_upsert_cliente(:id, :nombre, :apellido, :tel, :email, null)"),
+            {"id": id_cliente, "nombre": c.nombre, "apellido": c.apellido,
+             "tel": c.telefono, "email": c.email}
+        )
+        db.commit()
         return {"mensaje": "Cliente actualizado exitosamente"}
-    except HTTPException:
-        raise
     except Exception as e:
-        conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
+
 
 @app.delete("/clientes/{id_cliente}")
-def delete_cliente(id_cliente: int):
-    conn = get_connection()
-    cur = conn.cursor()
+def delete_cliente(
+    id_cliente: int,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente"))
+):
     try:
-        cur.execute("SELECT COUNT(*) FROM Venta WHERE id_cliente = %s", (id_cliente,))
-        if cur.fetchone()[0] > 0:
-            raise HTTPException(status_code=400, detail="No se puede eliminar: el cliente tiene ventas registradas")
-        cur.execute("DELETE FROM Cliente WHERE id_cliente = %s", (id_cliente,))
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Cliente no encontrado")
-        conn.commit()
+        db.execute(
+            text("CALL sp_eliminar_cliente(:id, null)"),
+            {"id": id_cliente}
+        )
+        db.commit()
         return {"mensaje": "Cliente eliminado exitosamente"}
-    except HTTPException:
-        raise
     except Exception as e:
-        conn.rollback()
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
+
 
 # ========================
-# VENTAS
+# VENTAS — Stored Procedure
 # ========================
 
 @app.get("/ventas")
-def get_ventas():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT v.id_venta, v.fecha, v.total,
-               c.nombre || ' ' || c.apellido AS cliente,
-               e.nombre || ' ' || e.apellido AS empleado
-        FROM Venta v
-        JOIN Cliente c ON v.id_cliente = c.id_cliente
-        JOIN Empleado e ON v.id_empleado = e.id_empleado
-        ORDER BY v.fecha DESC
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+def get_ventas(db: Session = Depends(get_db)):
+    rows = (
+        db.query(Venta)
+        .join(Cliente, Venta.id_cliente == Cliente.id_cliente)
+        .join(Empleado, Venta.id_empleado == Empleado.id_empleado)
+        .order_by(Venta.fecha.desc())
+        .all()
+    )
     return [
         {
-            "id_venta": r[0], "fecha": str(r[1]),
-            "total": float(r[2]), "cliente": r[3], "empleado": r[4]
-        } for r in rows
+            "id_venta": r.id_venta,
+            "fecha": str(r.fecha),
+            "total": float(r.total),
+            "cliente": f"{r.cliente.nombre} {r.cliente.apellido}",
+            "empleado": f"{r.empleado.nombre} {r.empleado.apellido}",
+        }
+        for r in rows
     ]
+
 
 @app.get("/ventas/{id_venta}/detalle")
-def get_detalle_venta(id_venta: int):
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT dv.id_detalle, p.nombre AS producto,
-               dv.cantidad, dv.precio_unitario,
-               (dv.cantidad * dv.precio_unitario) AS subtotal
-        FROM DetalleVenta dv
-        JOIN Producto p ON dv.id_producto = p.id_producto
-        WHERE dv.id_venta = %s
-    """, (id_venta,))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+def get_detalle_venta(id_venta: int, db: Session = Depends(get_db)):
+    rows = (
+        db.query(DetalleVenta)
+        .join(Producto, DetalleVenta.id_producto == Producto.id_producto)
+        .filter(DetalleVenta.id_venta == id_venta)
+        .all()
+    )
     return [
         {
-            "id_detalle": r[0], "producto": r[1],
-            "cantidad": r[2], "precio_unitario": float(r[3]),
-            "subtotal": float(r[4])
-        } for r in rows
+            "id_detalle": r.id_detalle,
+            "producto": r.producto.nombre,
+            "cantidad": r.cantidad,
+            "precio_unitario": float(r.precio_unitario),
+            "subtotal": float(r.cantidad * r.precio_unitario),
+        }
+        for r in rows
     ]
 
+
 @app.post("/ventas", status_code=201)
-def create_venta(v: VentaCreate):
-    conn = get_connection()
-    cur = conn.cursor()
+def create_venta(
+    v: VentaCreate,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente", "supervisor", "vendedor", "cajero"))
+):
     try:
-        cur.execute("BEGIN")
-        total = 0.0
-        detalles = []
-        for item in v.productos:
-            id_producto = item["id_producto"]
-            cantidad = item["cantidad"]
-            cur.execute(
-                "SELECT precio, stock FROM Producto WHERE id_producto = %s FOR UPDATE",
-                (id_producto,)
-            )
-            producto = cur.fetchone()
-            if not producto:
-                raise Exception(f"Producto {id_producto} no encontrado")
-            if producto[1] < cantidad:
-                raise Exception(f"Stock insuficiente para producto {id_producto}")
-            precio_unitario = float(producto[0])
-            total += precio_unitario * cantidad
-            detalles.append((id_producto, cantidad, precio_unitario))
-
-        cur.execute("""
-            INSERT INTO Venta (fecha, total, id_cliente, id_empleado)
-            VALUES (NOW(), %s, %s, %s) RETURNING id_venta
-        """, (total, v.id_cliente, v.id_empleado))
-        id_venta = cur.fetchone()[0]
-
-        for id_producto, cantidad, precio_unitario in detalles:
-            cur.execute("""
-                INSERT INTO DetalleVenta (cantidad, precio_unitario, id_venta, id_producto)
-                VALUES (%s, %s, %s, %s)
-            """, (cantidad, precio_unitario, id_venta, id_producto))
-            cur.execute(
-                "UPDATE Producto SET stock = stock - %s WHERE id_producto = %s",
-                (cantidad, id_producto)
-            )
-
-        cur.execute("COMMIT")
+        productos_json = json.dumps(v.productos)
+        result = db.execute(
+            text("CALL sp_registrar_venta(:cliente, :empleado, :productos::json, null, null)"),
+            {
+                "cliente": v.id_cliente,
+                "empleado": v.id_empleado,
+                "productos": productos_json,
+            }
+        )
+        db.commit()
+        row = result.fetchone()
+        id_venta = row[0] if row else None
+        total = float(row[1]) if row else 0.0
         return {"id_venta": id_venta, "total": total, "mensaje": "Venta registrada exitosamente"}
     except Exception as e:
-        cur.execute("ROLLBACK")
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    finally:
-        cur.close()
-        conn.close()
+
+
+# ========================
+# AJUSTE DE STOCK — SP exclusivo para bodeguero
+# ========================
+
+@app.post("/productos/ajustar-stock")
+def ajustar_stock(
+    req: AjusteStockRequest,
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente", "supervisor", "bodeguero"))
+):
+    try:
+        result = db.execute(
+            text("CALL sp_ajustar_stock(:id, :cantidad, :op, null, null)"),
+            {"id": req.id_producto, "cantidad": req.cantidad, "op": req.operacion}
+        )
+        db.commit()
+        row = result.fetchone()
+        return {
+            "stock_nuevo": row[0] if row else None,
+            "mensaje": row[1] if row else "Operación completada"
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ========================
 # REPORTES
 # ========================
 
 @app.get("/reportes/clientes-con-ventas")
-def clientes_con_ventas():
+def clientes_con_ventas(
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente", "supervisor"))
+):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -556,13 +516,11 @@ def clientes_con_ventas():
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [
-        {"id_cliente": r[0], "nombre": r[1], "apellido": r[2], "email": r[3]}
-        for r in rows
-    ]
+    return [{"id_cliente": r[0], "nombre": r[1], "apellido": r[2], "email": r[3]} for r in rows]
+
 
 @app.get("/reportes/productos-bajo-stock")
-def productos_bajo_stock():
+def productos_bajo_stock(db: Session = Depends(get_db)):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -574,13 +532,14 @@ def productos_bajo_stock():
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [
-        {"id_producto": r[0], "nombre": r[1], "stock": r[2], "precio": float(r[3])}
-        for r in rows
-    ]
+    return [{"id_producto": r[0], "nombre": r[1], "stock": r[2], "precio": float(r[3])} for r in rows]
+
 
 @app.get("/reportes/ventas-por-cliente")
-def ventas_por_cliente():
+def ventas_por_cliente(
+    db: Session = Depends(get_db),
+    _: dict = Depends(require_roles("gerente", "supervisor"))
+):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -598,14 +557,13 @@ def ventas_por_cliente():
     cur.close()
     conn.close()
     return [
-        {
-            "cliente": r[0], "total_ventas": r[1],
-            "monto_total": float(r[2]), "promedio_venta": float(r[3])
-        } for r in rows
+        {"cliente": r[0], "total_ventas": r[1], "monto_total": float(r[2]), "promedio_venta": float(r[3])}
+        for r in rows
     ]
 
+
 @app.get("/reportes/productos-mas-vendidos")
-def productos_mas_vendidos():
+def productos_mas_vendidos(db: Session = Depends(get_db)):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -624,13 +582,11 @@ def productos_mas_vendidos():
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    return [
-        {"nombre": r[0], "unidades_vendidas": r[1], "ingresos": float(r[2])}
-        for r in rows
-    ]
+    return [{"nombre": r[0], "unidades_vendidas": r[1], "ingresos": float(r[2])} for r in rows]
+
 
 @app.get("/reportes/resumen-ventas")
-def resumen_ventas():
+def resumen_ventas(db: Session = Depends(get_db)):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM resumen_ventas ORDER BY fecha DESC")
@@ -638,14 +594,14 @@ def resumen_ventas():
     cur.close()
     conn.close()
     return [
-        {
-            "id_venta": r[0], "fecha": str(r[1]), "total": float(r[2]),
-            "cliente": r[3], "empleado": r[4], "cantidad_productos": r[5]
-        } for r in rows
+        {"id_venta": r[0], "fecha": str(r[1]), "total": float(r[2]),
+         "cliente": r[3], "empleado": r[4], "cantidad_productos": r[5]}
+        for r in rows
     ]
 
+
 @app.get("/reportes/exportar-ventas-csv")
-def exportar_ventas_csv():
+def exportar_ventas_csv(db: Session = Depends(get_db)):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM resumen_ventas ORDER BY fecha DESC")
