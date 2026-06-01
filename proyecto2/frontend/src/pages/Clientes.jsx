@@ -108,6 +108,14 @@ export default function Clientes() {
     } catch (e) {
       mostrarMensaje(e.message, true)
     }
+      const res = await fetch(url, {
+      method,
+      headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${getToken()}`
+    },
+      body: JSON.stringify(form)
+    })
   }
 
   return (

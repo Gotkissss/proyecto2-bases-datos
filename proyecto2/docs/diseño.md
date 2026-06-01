@@ -137,3 +137,26 @@ CREATE INDEX idx_producto_proveedor ON Producto(id_proveedor);
 ## Diagrama ER
 <img width="1106" height="1280" alt="image" src="https://github.com/user-attachments/assets/9dc1d78d-6ec8-4be2-99b5-9532f7cbf357" />
 
+---
+
+## Esquema de Roles
+
+Los roles se definen directamente en PostgreSQL con `CREATE ROLE` y permisos asignados con `GRANT`.
+
+| Rol            | Tablas con acceso completo (SELECT/INSERT/UPDATE/DELETE) | Restricciones |
+|----------------|----------------------------------------------------------|----------------|
+| rol_gerente    | Todas las tablas y vistas                                | Ninguna        |
+| rol_supervisor | Producto, Cliente, Venta, DetalleVenta, Categoria, Proveedor, Empleado, resumen_ventas | No accede a Usuario; no puede eliminar |
+| rol_vendedor   | SELECT en Producto, Cliente, Empleado, Categoria, Proveedor; INSERT en Venta y DetalleVenta | No puede modificar productos ni eliminar |
+| rol_cajero     | SELECT en Venta, DetalleVenta, Producto, Cliente, Empleado, resumen_ventas | Solo lectura; no puede crear ni eliminar |
+| rol_bodeguero  | SELECT en Producto, Categoria, Proveedor; UPDATE(stock) en Producto | Solo puede ajustar stock |
+
+### Usuarios de prueba
+
+| Usuario           | Contraseña | Rol        |
+|-------------------|------------|------------|
+| admin_gerente     | secret123  | gerente    |
+| admin_supervisor  | secret123  | supervisor |
+| admin_vendedor    | secret123  | vendedor   |
+| admin_cajero      | secret123  | cajero     |
+| admin_bodeguero   | secret123  | bodeguero  |
