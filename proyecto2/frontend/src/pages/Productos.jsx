@@ -93,7 +93,11 @@ export default function Productos() {
       const url = editandoId ? `${API}/productos/${editandoId}` : `${API}/productos`
       const method = editandoId ? 'PUT' : 'POST'
       const res = await fetch(url, {
-        method, headers: { 'Content-Type': 'application/json' },
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`
+        },
         body: JSON.stringify(body)
       })
       const data = await res.json()
@@ -106,20 +110,15 @@ export default function Productos() {
     } finally {
       setLoading(false)
     }
-    const res = await fetch(url, {
-      method,
-      headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${getToken()}`
-      },
-      body: JSON.stringify(body)
-})
   }
 
   async function eliminar(id) {
     if (!confirm('¿Eliminar este producto?')) return
     try {
-      const res = await fetch(`${API}/productos/${id}`, { method: 'DELETE' })
+      const res = await fetch(`${API}/productos/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${getToken()}` }
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Error al eliminar')
       mostrarMensaje('Producto eliminado')
@@ -127,10 +126,6 @@ export default function Productos() {
     } catch (e) {
       mostrarMensaje(e.message, true)
     }
-    const res = await fetch(`${API}/productos/${id}`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${getToken()}` }
-    })
   }
 
   return (

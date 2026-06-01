@@ -571,8 +571,8 @@ INSERT INTO DetalleVenta (cantidad, precio_unitario, id_venta, id_producto) VALU
 -- ============================================================
 
 INSERT INTO Usuario (username, password_hash, rol) VALUES
-('admin_gerente',    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'gerente'),
-('admin_supervisor', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'supervisor'),
-('admin_vendedor',   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'vendedor'),
-('admin_cajero',     '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'cajero'),
-('admin_bodeguero',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'bodeguero');
+('admin_gerente',    '$2b$12$szaGgdp214B0fcmqldAj1.eD6jcKbwmv/LbIaWRBYUSkLrYKUuUtK', 'gerente'),
+('admin_supervisor', '$2b$12$szaGgdp214B0fcmqldAj1.eD6jcKbwmv/LbIaWRBYUSkLrYKUuUtK', 'supervisor'),
+('admin_vendedor',   '$2b$12$szaGgdp214B0fcmqldAj1.eD6jcKbwmv/LbIaWRBYUSkLrYKUuUtK', 'vendedor'),
+('admin_cajero',     '$2b$12$szaGgdp214B0fcmqldAj1.eD6jcKbwmv/LbIaWRBYUSkLrYKUuUtK', 'cajero'),
+('admin_bodeguero',  '$2b$12$szaGgdp214B0fcmqldAj1.eD6jcKbwmv/LbIaWRBYUSkLrYKUuUtK', 'bodeguero');

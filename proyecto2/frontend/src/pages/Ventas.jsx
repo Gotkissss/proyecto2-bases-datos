@@ -91,7 +91,10 @@ export default function Ventas() {
     try {
       const res = await fetch(`${API}/ventas`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`
+        },
         body: JSON.stringify({
           id_cliente: parseInt(idCliente),
           id_empleado: parseInt(idEmpleado),
@@ -115,22 +118,6 @@ export default function Ventas() {
       setLoading(false)
     }
   }
-  
-  const res = await fetch(`${API}/ventas`, {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${getToken()}`
-  },
-  body: JSON.stringify({
-    id_cliente: parseInt(idCliente),
-    id_empleado: parseInt(idEmpleado),
-    productos: lineas.map(l => ({
-      id_producto: parseInt(l.id_producto),
-      cantidad: parseInt(l.cantidad)
-    }))
-  })
-})
 
   async function verDetalle(id_venta) {
     const data = await fetch(`${API}/ventas/${id_venta}/detalle`).then(r => r.json())

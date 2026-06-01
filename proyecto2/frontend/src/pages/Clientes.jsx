@@ -74,7 +74,11 @@ export default function Clientes() {
       const url = editandoId ? `${API}/clientes/${editandoId}` : `${API}/clientes`
       const method = editandoId ? 'PUT' : 'POST'
       const res = await fetch(url, {
-        method, headers: { 'Content-Type': 'application/json' },
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getToken()}`
+        },
         body: JSON.stringify(form)
       })
       const data = await res.json()
@@ -87,20 +91,15 @@ export default function Clientes() {
     } finally {
       setLoading(false)
     }
-    const res = await fetch(url, {
-      method,
-      headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${getToken()}`
-    },
-      body: JSON.stringify(form)
-    })
   }
 
   async function eliminar(id) {
     if (!confirm('¿Eliminar este cliente?')) return
     try {
-      const res = await fetch(`${API}/clientes/${id}`, { method: 'DELETE' })
+      const res = await fetch(`${API}/clientes/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${getToken()}` }
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Error al eliminar')
       mostrarMensaje('Cliente eliminado')
@@ -108,14 +107,6 @@ export default function Clientes() {
     } catch (e) {
       mostrarMensaje(e.message, true)
     }
-      const res = await fetch(url, {
-      method,
-      headers: {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${getToken()}`
-    },
-      body: JSON.stringify(form)
-    })
   }
 
   return (
