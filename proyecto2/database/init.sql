@@ -1,6 +1,7 @@
--- ========================
+-- ============================================================
 -- DDL
--- ========================
+-- ============================================================
+
 CREATE TABLE Categoria (
     id_categoria SERIAL PRIMARY KEY,
     nombre VARCHAR(100) NOT NULL,
@@ -58,25 +59,321 @@ CREATE TABLE DetalleVenta (
     id_producto INTEGER NOT NULL REFERENCES Producto(id_producto)
 );
 
--- ========================
+CREATE TABLE Usuario (
+    id_usuario SERIAL PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    rol VARCHAR(20) NOT NULL DEFAULT 'vendedor'
+);
+
+-- ============================================================
 -- ÍNDICES
--- ========================
+-- ============================================================
 
--- Acelera reportes y filtros por fecha de venta
 CREATE INDEX idx_venta_fecha ON Venta(fecha);
-
--- Acelera filtros de productos por categoría
 CREATE INDEX idx_producto_categoria ON Producto(id_categoria);
-
--- Acelera consulta de detalles de una venta específica
 CREATE INDEX idx_detalle_venta ON DetalleVenta(id_venta);
-
--- Acelera búsquedas de productos por proveedor
 CREATE INDEX idx_producto_proveedor ON Producto(id_proveedor);
 
--- ========================
+-- ============================================================
+-- VIEW
+-- ============================================================
+
+CREATE OR REPLACE VIEW resumen_ventas AS
+SELECT
+    v.id_venta,
+    v.fecha,
+    v.total,
+    c.nombre || ' ' || c.apellido AS cliente,
+    e.nombre || ' ' || e.apellido AS empleado,
+    COUNT(dv.id_detalle) AS cantidad_productos
+FROM Venta v
+JOIN Cliente c ON v.id_cliente = c.id_cliente
+JOIN Empleado e ON v.id_empleado = e.id_empleado
+JOIN DetalleVenta dv ON v.id_venta = dv.id_venta
+GROUP BY v.id_venta, v.fecha, v.total, c.nombre, c.apellido, e.nombre, e.apellido;
+
+-- ============================================================
+-- ROLES EN EL DBMS
+-- ============================================================
+
+-- Rol 1: gerente — acceso total de lectura y escritura
+CREATE ROLE rol_gerente;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rol_gerente;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rol_gerente;
+
+-- Rol 2: supervisor — puede ver y modificar productos, clientes, ventas; no puede tocar usuarios
+CREATE ROLE rol_supervisor;
+GRANT SELECT, INSERT, UPDATE ON Producto, Cliente, Venta, DetalleVenta, Categoria, Proveedor, Empleado TO rol_supervisor;
+GRANT SELECT ON resumen_ventas TO rol_supervisor;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rol_supervisor;
+
+-- Rol 3: vendedor — puede registrar ventas y ver productos/clientes; no puede eliminar ni tocar configs
+CREATE ROLE rol_vendedor;
+GRANT SELECT ON Producto, Cliente, Empleado, Categoria, Proveedor TO rol_vendedor;
+GRANT SELECT, INSERT ON Venta, DetalleVenta TO rol_vendedor;
+GRANT SELECT ON resumen_ventas TO rol_vendedor;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rol_vendedor;
+
+-- Rol 4: cajero — solo puede ver ventas y registrar el cobro; lectura de productos
+CREATE ROLE rol_cajero;
+GRANT SELECT ON Venta, DetalleVenta, Producto, Cliente, Empleado TO rol_cajero;
+GRANT SELECT ON resumen_ventas TO rol_cajero;
+
+-- Rol 5: bodeguero — solo puede ver y actualizar stock de productos
+CREATE ROLE rol_bodeguero;
+GRANT SELECT ON Producto, Categoria, Proveedor TO rol_bodeguero;
+GRANT UPDATE (stock) ON Producto TO rol_bodeguero;
+
+-- ============================================================
+-- STORED PROCEDURES
+-- ============================================================
+
+-- SP 1: registrar una venta completa con transacción y rollback
+CREATE OR REPLACE PROCEDURE sp_registrar_venta(
+    p_id_cliente INTEGER,
+    p_id_empleado INTEGER,
+    p_productos JSON,
+    OUT p_id_venta INTEGER,
+    OUT p_total NUMERIC
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_item JSON;
+    v_id_producto INTEGER;
+    v_cantidad INTEGER;
+    v_precio NUMERIC;
+    v_stock INTEGER;
+BEGIN
+    p_total := 0;
+
+    FOR v_item IN SELECT * FROM json_array_elements(p_productos)
+    LOOP
+        v_id_producto := (v_item->>'id_producto')::INTEGER;
+        v_cantidad    := (v_item->>'cantidad')::INTEGER;
+
+        SELECT precio, stock INTO v_precio, v_stock
+        FROM Producto
+        WHERE id_producto = v_id_producto
+        FOR UPDATE;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Producto % no existe', v_id_producto;
+        END IF;
+
+        IF v_stock < v_cantidad THEN
+            RAISE EXCEPTION 'Stock insuficiente para producto %', v_id_producto;
+        END IF;
+
+        p_total := p_total + (v_precio * v_cantidad);
+    END LOOP;
+
+    INSERT INTO Venta (fecha, total, id_cliente, id_empleado)
+    VALUES (NOW(), p_total, p_id_cliente, p_id_empleado)
+    RETURNING id_venta INTO p_id_venta;
+
+    FOR v_item IN SELECT * FROM json_array_elements(p_productos)
+    LOOP
+        v_id_producto := (v_item->>'id_producto')::INTEGER;
+        v_cantidad    := (v_item->>'cantidad')::INTEGER;
+
+        SELECT precio INTO v_precio FROM Producto WHERE id_producto = v_id_producto;
+
+        INSERT INTO DetalleVenta (cantidad, precio_unitario, id_venta, id_producto)
+        VALUES (v_cantidad, v_precio, p_id_venta, v_id_producto);
+
+        UPDATE Producto SET stock = stock - v_cantidad WHERE id_producto = v_id_producto;
+    END LOOP;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE;
+END;
+$$;
+
+-- SP 2: crear o actualizar un producto
+CREATE OR REPLACE PROCEDURE sp_upsert_producto(
+    p_id_producto INTEGER,
+    p_nombre VARCHAR,
+    p_descripcion TEXT,
+    p_precio NUMERIC,
+    p_stock INTEGER,
+    p_id_categoria INTEGER,
+    p_id_proveedor INTEGER,
+    OUT p_resultado INTEGER
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF p_id_producto IS NULL OR p_id_producto = 0 THEN
+        INSERT INTO Producto (nombre, descripcion, precio, stock, id_categoria, id_proveedor)
+        VALUES (p_nombre, p_descripcion, p_precio, p_stock, p_id_categoria, p_id_proveedor)
+        RETURNING id_producto INTO p_resultado;
+    ELSE
+        UPDATE Producto
+        SET nombre = COALESCE(p_nombre, nombre),
+            descripcion = COALESCE(p_descripcion, descripcion),
+            precio = COALESCE(p_precio, precio),
+            stock = COALESCE(p_stock, stock),
+            id_categoria = COALESCE(p_id_categoria, id_categoria),
+            id_proveedor = COALESCE(p_id_proveedor, id_proveedor)
+        WHERE id_producto = p_id_producto;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Producto % no encontrado', p_id_producto;
+        END IF;
+
+        p_resultado := p_id_producto;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE;
+END;
+$$;
+
+-- SP 3: crear o actualizar un cliente
+CREATE OR REPLACE PROCEDURE sp_upsert_cliente(
+    p_id_cliente INTEGER,
+    p_nombre VARCHAR,
+    p_apellido VARCHAR,
+    p_telefono VARCHAR,
+    p_email VARCHAR,
+    OUT p_resultado INTEGER
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF p_id_cliente IS NULL OR p_id_cliente = 0 THEN
+        INSERT INTO Cliente (nombre, apellido, telefono, email)
+        VALUES (p_nombre, p_apellido, p_telefono, p_email)
+        RETURNING id_cliente INTO p_resultado;
+    ELSE
+        UPDATE Cliente
+        SET nombre   = COALESCE(p_nombre, nombre),
+            apellido = COALESCE(p_apellido, apellido),
+            telefono = COALESCE(p_telefono, telefono),
+            email    = COALESCE(p_email, email)
+        WHERE id_cliente = p_id_cliente;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Cliente % no encontrado', p_id_cliente;
+        END IF;
+
+        p_resultado := p_id_cliente;
+    END IF;
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE;
+END;
+$$;
+
+-- SP 4: ajuste de stock con validación y parámetro de salida
+CREATE OR REPLACE PROCEDURE sp_ajustar_stock(
+    p_id_producto INTEGER,
+    p_cantidad INTEGER,
+    p_operacion VARCHAR,
+    OUT p_stock_nuevo INTEGER,
+    OUT p_mensaje VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_stock_actual INTEGER;
+BEGIN
+    SELECT stock INTO v_stock_actual
+    FROM Producto
+    WHERE id_producto = p_id_producto
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Producto % no encontrado', p_id_producto;
+    END IF;
+
+    IF p_operacion = 'incrementar' THEN
+        UPDATE Producto SET stock = stock + p_cantidad WHERE id_producto = p_id_producto;
+        p_stock_nuevo := v_stock_actual + p_cantidad;
+        p_mensaje := 'Stock incrementado correctamente';
+    ELSIF p_operacion = 'decrementar' THEN
+        IF v_stock_actual < p_cantidad THEN
+            RAISE EXCEPTION 'Stock insuficiente: disponible %, solicitado %', v_stock_actual, p_cantidad;
+        END IF;
+        UPDATE Producto SET stock = stock - p_cantidad WHERE id_producto = p_id_producto;
+        p_stock_nuevo := v_stock_actual - p_cantidad;
+        p_mensaje := 'Stock decrementado correctamente';
+    ELSE
+        RAISE EXCEPTION 'Operación no válida: usar incrementar o decrementar';
+    END IF;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE;
+END;
+$$;
+
+-- SP 5: eliminar producto con validación de integridad
+CREATE OR REPLACE PROCEDURE sp_eliminar_producto(
+    p_id_producto INTEGER,
+    OUT p_mensaje VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO v_count FROM DetalleVenta WHERE id_producto = p_id_producto;
+
+    IF v_count > 0 THEN
+        RAISE EXCEPTION 'No se puede eliminar: el producto tiene % venta(s) registrada(s)', v_count;
+    END IF;
+
+    DELETE FROM Producto WHERE id_producto = p_id_producto;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Producto % no encontrado', p_id_producto;
+    END IF;
+
+    p_mensaje := 'Producto eliminado correctamente';
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE;
+END;
+$$;
+
+-- SP 6: eliminar cliente con validación
+CREATE OR REPLACE PROCEDURE sp_eliminar_cliente(
+    p_id_cliente INTEGER,
+    OUT p_mensaje VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_count INTEGER;
+BEGIN
+    SELECT COUNT(*) INTO v_count FROM Venta WHERE id_cliente = p_id_cliente;
+
+    IF v_count > 0 THEN
+        RAISE EXCEPTION 'No se puede eliminar: el cliente tiene % venta(s) registrada(s)', v_count;
+    END IF;
+
+    DELETE FROM Cliente WHERE id_cliente = p_id_cliente;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Cliente % no encontrado', p_id_cliente;
+    END IF;
+
+    p_mensaje := 'Cliente eliminado correctamente';
+
+EXCEPTION
+    WHEN OTHERS THEN
+        RAISE;
+END;
+$$;
+
+-- ============================================================
 -- SEED DATA
--- ========================
+-- ============================================================
 
 INSERT INTO Categoria (nombre, descripcion) VALUES
 ('Electrónica',       'Dispositivos y accesorios electrónicos'),
@@ -267,19 +564,15 @@ INSERT INTO DetalleVenta (cantidad, precio_unitario, id_venta, id_producto) VALU
 (2,   32.00, 24, 23),
 (2,   48.00, 25, 24);
 
--- ========================
--- VIEW
--- ========================
-CREATE OR REPLACE VIEW resumen_ventas AS
-SELECT
-    v.id_venta,
-    v.fecha,
-    v.total,
-    c.nombre || ' ' || c.apellido AS cliente,
-    e.nombre || ' ' || e.apellido AS empleado,
-    COUNT(dv.id_detalle) AS cantidad_productos
-FROM Venta v
-JOIN Cliente c ON v.id_cliente = c.id_cliente
-JOIN Empleado e ON v.id_empleado = e.id_empleado
-JOIN DetalleVenta dv ON v.id_venta = dv.id_venta
-GROUP BY v.id_venta, v.fecha, v.total, c.nombre, c.apellido, e.nombre, e.apellido;
+-- ============================================================
+-- USUARIOS DE PRUEBA (uno por rol)
+-- contraseña de todos: secret123
+-- hash bcrypt generado externamente
+-- ============================================================
+
+INSERT INTO Usuario (username, password_hash, rol) VALUES
+('admin_gerente',    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'gerente'),
+('admin_supervisor', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'supervisor'),
+('admin_vendedor',   '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'vendedor'),
+('admin_cajero',     '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'cajero'),
+('admin_bodeguero',  '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMekJ.MsICaDBMQU7sQ5xWw0Gy', 'bodeguero');
