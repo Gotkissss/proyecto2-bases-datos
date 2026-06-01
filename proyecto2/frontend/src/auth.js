@@ -20,3 +20,8 @@ export function clearSession() {
 export function isAuthenticated() {
   return !!getToken()
 }
+
+export function hasRole(...roles) {
+  const user = getUser()
+  return user ? roles.includes(user.rol) : false
+}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { getToken } from '../auth'
 
 const API = 'http://localhost:8000'
 
@@ -86,6 +87,14 @@ export default function Clientes() {
     } finally {
       setLoading(false)
     }
+    const res = await fetch(url, {
+      method,
+      headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${getToken()}`
+    },
+      body: JSON.stringify(form)
+    })
   }
 
   async function eliminar(id) {

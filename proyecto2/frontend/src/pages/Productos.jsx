@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { getToken } from '../auth'
 
 const API = 'http://localhost:8000'
 
@@ -105,6 +106,14 @@ export default function Productos() {
     } finally {
       setLoading(false)
     }
+    const res = await fetch(url, {
+      method,
+      headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${getToken()}`
+      },
+      body: JSON.stringify(body)
+})
   }
 
   async function eliminar(id) {
@@ -118,6 +127,10 @@ export default function Productos() {
     } catch (e) {
       mostrarMensaje(e.message, true)
     }
+    const res = await fetch(`${API}/productos/${id}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${getToken()}` }
+    })
   }
 
   return (

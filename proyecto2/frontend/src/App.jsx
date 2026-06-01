@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { Routes, Route, NavLink } from 'react-router-dom'
-import { isAuthenticated, getUser, clearSession } from './auth'
+import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
+import { isAuthenticated, getUser, clearSession, hasRole } from './auth'
 import Login from './pages/Login'
 import Productos from './pages/Productos'
 import Clientes from './pages/Clientes'
 import Ventas from './pages/Ventas'
 import Reportes from './pages/Reportes'
+import Bodega from './pages/Bodega'
 
 export default function App() {
   const [autenticado, setAutenticado] = useState(isAuthenticated())
@@ -24,6 +25,14 @@ export default function App() {
     return <Login onLogin={handleLogin} />
   }
 
+  const links = [
+    { to: '/', label: 'Productos', roles: ['gerente', 'supervisor', 'vendedor', 'cajero', 'bodeguero'] },
+    { to: '/clientes', label: 'Clientes', roles: ['gerente', 'supervisor', 'vendedor'] },
+    { to: '/ventas', label: 'Ventas', roles: ['gerente', 'supervisor', 'vendedor', 'cajero'] },
+    { to: '/reportes', label: 'Reportes', roles: ['gerente', 'supervisor'] },
+    { to: '/bodega', label: 'Bodega', roles: ['gerente', 'supervisor', 'bodeguero'] },
+  ]
+
   return (
     <div style={{ fontFamily: 'sans-serif', minHeight: '100vh', background: '#f5f5f5' }}>
       <nav style={{
@@ -33,27 +42,24 @@ export default function App() {
         <span style={{ color: 'white', fontWeight: 'bold', fontSize: '1.2rem', marginRight: '2rem' }}>
           🛒 Tienda
         </span>
-        {[
-          { to: '/', label: 'Productos' },
-          { to: '/clientes', label: 'Clientes' },
-          { to: '/ventas', label: 'Ventas' },
-          { to: '/reportes', label: 'Reportes' },
-        ].map(link => (
-          <NavLink
-            key={link.to}
-            to={link.to}
-            end={link.to === '/'}
-            style={({ isActive }) => ({
-              color: isActive ? '#e94560' : '#ccc',
-              textDecoration: 'none',
-              fontWeight: isActive ? 'bold' : 'normal',
-              borderBottom: isActive ? '2px solid #e94560' : '2px solid transparent',
-              paddingBottom: '4px'
-            })}
-          >
-            {link.label}
-          </NavLink>
-        ))}
+        {links
+          .filter(link => hasRole(...link.roles))
+          .map(link => (
+            <NavLink
+              key={link.to}
+              to={link.to}
+              end={link.to === '/'}
+              style={({ isActive }) => ({
+                color: isActive ? '#e94560' : '#ccc',
+                textDecoration: 'none',
+                fontWeight: isActive ? 'bold' : 'normal',
+                borderBottom: isActive ? '2px solid #e94560' : '2px solid transparent',
+                paddingBottom: '4px'
+              })}
+            >
+              {link.label}
+            </NavLink>
+          ))}
 
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <span style={{ color: '#ccc', fontSize: '0.9rem' }}>
@@ -75,9 +81,18 @@ export default function App() {
       <main style={{ padding: '2rem' }}>
         <Routes>
           <Route path="/" element={<Productos />} />
-          <Route path="/clientes" element={<Clientes />} />
-          <Route path="/ventas" element={<Ventas />} />
-          <Route path="/reportes" element={<Reportes />} />
+          <Route path="/clientes" element={
+            hasRole('gerente', 'supervisor', 'vendedor') ? <Clientes /> : <Navigate to="/" />
+          } />
+          <Route path="/ventas" element={
+            hasRole('gerente', 'supervisor', 'vendedor', 'cajero') ? <Ventas /> : <Navigate to="/" />
+          } />
+          <Route path="/reportes" element={
+            hasRole('gerente', 'supervisor') ? <Reportes /> : <Navigate to="/" />
+          } />
+          <Route path="/bodega" element={
+            hasRole('gerente', 'supervisor', 'bodeguero') ? <Bodega /> : <Navigate to="/" />
+          } />
         </Routes>
       </main>
     </div>
